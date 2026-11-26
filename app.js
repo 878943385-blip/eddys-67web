@@ -424,12 +424,82 @@
       ${esc(q.text)}`;
 
     const answerer = state.players.find((p) => p.id === state.answererId);
+    const answered = !!state.lastAnswer;
+
+    const box = $('answer-box');
+    if (isAnswerer()) {
+      box.style.display = 'block';
+      box.innerHTML = `
+        <div class="answer-box-title">🎯 你的答案</div>
+        <textarea id="answer-input" maxlength="500" placeholder="${answered ? '想修改答案可以再次提交，会覆盖上一条' : '认真作答，或者点麦克风用说的…'}">${answered ? esc(state.lastAnswer.text) : ''}</textarea>
+        <div class="answer-actions">
+          <button id="voice-btn" class="btn mini">🎤 语音输入</button>
+          <button id="submit-answer" class="btn primary">${answered ? '📤 重新提交' : '📤 提交答案'}</button>
+        </div>
+        <div class="voice-status" id="voice-status" style="display:none">🎙️ 正在聆听，请说话…（再点一次结束）</div>`;
+      $('submit-answer').addEventListener('click', () => {
+        const text = $('answer-input').value.trim();
+        if (!text) return toast('先写下你的答案，或用语音输入', true);
+        send({ action: 'submit_answer', text });
+        toast('✅ 答案已提交，大家都看到了！');
+      });
+      $('voice-btn').addEventListener('click', () => toggleVoiceInput('answer-input'));
+    } else {
+      box.style.display = 'block';
+      box.innerHTML = answered
+        ? `<div class="answer-wait">📌 <b>${esc(answerer ? answerer.name : '')}</b> 已提交答案，看聊天区的答案卡！</div>`
+        : `<div class="answer-wait">⏳ 等待 <b>${esc(answerer ? answerer.name : '')}</b> 在答题框里作答… 大家可以在聊天区围观、起哄、催更！</div>`;
+    }
+
     $('answer-hint').innerHTML = isAnswerer()
-      ? '<b>🎯 到你了！</b>在下面的聊天区作答吧，大家都在看着你～'
-      : `🎯 回答者是 <b>${esc(answerer ? answerer.name : '')}</b>，在聊天区围观/催更吧！`;
+      ? '<b>🎯 到你了！</b>在下方答题框写下答案（可语音输入），点「提交答案」后所有人都能看到'
+      : `🎯 回答者是 <b>${esc(answerer ? answerer.name : '')}</b>，他的答案提交后会以大卡片出现在聊天区`;
 
     const btn = $('next-round-btn');
     btn.style.display = isAsker() || isHost() ? 'inline-block' : 'none';
+  }
+
+  // ---- 语音输入（Web Speech API）----
+  let recog = null;
+  let recogActive = false;
+  function toggleVoiceInput(targetId) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return toast('这个浏览器不支持语音输入，请用 Chrome / Edge / Safari 较新版本', true);
+    const statusEl = $('voice-status');
+    if (recogActive) {
+      try { recog.stop(); } catch (e) { /* ignore */ }
+      return;
+    }
+    const input = $(targetId);
+    let base = input.value;
+    recog = new SR();
+    recog.lang = 'zh-CN';
+    recog.continuous = true;
+    recog.interimResults = true;
+    recog.onstart = () => {
+      recogActive = true;
+      if (statusEl) statusEl.style.display = 'block';
+      const btn = $('voice-btn');
+      if (btn) { btn.classList.add('recording'); btn.textContent = '⏹ 停止语音'; }
+    };
+    recog.onresult = (e) => {
+      let finalText = '', interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t; else interim += t;
+      }
+      if (input) input.value = (base + finalText + interim).slice(0, 500);
+    };
+    recog.onerror = (e) => {
+      if (e.error === 'not-allowed') toast('麦克风权限被拒绝，请在浏览器设置里允许', true);
+    };
+    recog.onend = () => {
+      recogActive = false;
+      if (statusEl) statusEl.style.display = 'none';
+      const btn = $('voice-btn');
+      if (btn) { btn.classList.remove('recording'); btn.textContent = '🎤 语音输入'; }
+    };
+    try { recog.start(); } catch (err) { recogActive = false; toast('语音输入启动失败：' + err.message, true); }
   }
 
   function renderChat() {
@@ -442,6 +512,9 @@
       if (m.from === 'system') {
         d.className = 'chat-msg system';
         d.innerHTML = `<div class="bubble">${esc(m.text)}</div>`;
+      } else if (m.answer) {
+        d.className = 'chat-msg answer-card' + (m.from === myId ? ' mine' : '');
+        d.innerHTML = `<div class="meta">🎯 ${esc(m.name)} 的答案</div><div class="bubble">${esc(m.text)}</div>`;
       } else {
         d.className = 'chat-msg' + (m.from === myId ? ' mine' : '');
         d.innerHTML = `<div class="meta">${esc(m.name)}</div><div class="bubble">${esc(m.text)}</div>`;
@@ -512,7 +585,7 @@
   });
 
   $('logout-btn').addEventListener('click', () => {
-    if (!confirm('退出登录？本机保存的账号和好友记录将被清除')) return;
+    if (!confirm('退出登录？好友和聊天记录已同步到云端，换设备/重新登录都不会丢失')) return;
     social.logout();
     location.reload();
   });
@@ -653,6 +726,22 @@
       .catch((err) => toast(err.message, true));
   }
 
+  // ---------- 通话 ----------
+  const callManager = new CallManager({
+    social,
+    getName: () => (account && account.name) || '玩家',
+  });
+
+  function startCallFromDM(kind) {
+    if (!dmWith) return;
+    const friend = social.friends.find((f) => f.username === dmWith);
+    if (!friend) return toast('找不到这个好友', true);
+    if (!social.onlineOf(dmWith)) return toast('对方不在线，无法呼叫', true);
+    callManager.startCall(dmWith, friend.name, kind).catch((err) => toast(err.message, true));
+  }
+  $('dm-call-audio').addEventListener('click', () => startCallFromDM('audio'));
+  $('dm-call-video').addEventListener('click', () => startCallFromDM('video'));
+
   function handleDM(msg, isOpen) {
     if (isOpen && dmWith === msg.from) {
       renderDM();
@@ -669,6 +758,7 @@
   social.onDM = handleDM;
   social.onFriendRequest = handleFriendRequest;
   social.onFriendResult = handleFriendResult;
+  social.onHistory = () => { if (dmWith) renderDM(); };
 
   // 已有本机登录态 → 直接进首页；否则先注册/登录
   const saved = social.loadSession();

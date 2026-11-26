@@ -136,7 +136,12 @@ function pub(client, topic, obj, retain) {
 
   engine.handleAction(answererId, { action: 'next_round' });
   await sleep(300);
-  assert(errors.some((e) => e.pid === answererId && /出题人/.test(e.text)), '回答者不能跳轮');
+  // 回答者若同时是出题人或房主，跳轮是允许的（随机选中导致）
+  if (answererId !== askerId && answererId !== engine.room.hostId) {
+    assert(errors.some((e) => e.pid === answererId && /出题人/.test(e.text)), '回答者不能跳轮');
+  } else {
+    assert(errors.every((e) => e.pid !== answererId), '回答者即出题人/房主，允许跳轮');
+  }
 
   engine.handleAction(askerId, { action: 'next_round' });
   await sleep(400);

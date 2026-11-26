@@ -79,6 +79,7 @@
         restartVoteCount: room.restartVotes.size,
         playerCount: onlinePlayers().length,
         lastResult: room.lastResult,
+        lastAnswer: room.lastAnswer || null,
         question: room.question,
         players: [...room.players.values()].map((p) => ({
           id: p.id,
@@ -105,6 +106,7 @@
       room.restartVotes.clear();
       room.lastResult = null;
       room.question = null;
+      room.lastAnswer = null;
       room.askerId = null;
       room.answererId = null;
       room.losers = [];
@@ -341,8 +343,22 @@
           }
           break;
         }
-        case 'ask_question': {
+        case 'submit_answer': {
           if (!player) return opts.emitError(playerId, '请先加入房间');
+          if (room.phase !== 'answer') return opts.emitError(playerId, '当前不在回答阶段');
+          if (playerId !== room.answererId) return opts.emitError(playerId, '只有回答者可以提交答案');
+          const atext = String(data.text || '').trim();
+          if (!atext) return opts.emitError(playerId, '答案不能为空');
+          const ansMsg = { from: playerId, name: player.name, text: String(atext).slice(0, 500), ts: Date.now(), answer: true };
+          room.chat.push(ansMsg);
+          if (room.chat.length > 100) room.chat.shift();
+          room.lastAnswer = ansMsg;
+          opts.emitChat(ansMsg);
+          sysChat(`📌 ${player.name} 已提交答案（见上方答案卡）`);
+          broadcast();
+          break;
+        }
+        case 'ask_question': {          if (!player) return opts.emitError(playerId, '请先加入房间');
           if (room.phase !== 'ask') return opts.emitError(playerId, '当前不是出题阶段');
           if (playerId !== room.askerId) return opts.emitError(playerId, '只有出题人可以出题');
           const qtype = data.qtype === 'dare' ? 'dare' : 'truth';

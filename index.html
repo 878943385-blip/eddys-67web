@@ -190,6 +190,7 @@
           <div id="phase-answer" class="phase-box" style="display:none">
             <h2>💬 回答环节</h2>
             <div id="question-card" class="question-card"></div>
+            <div id="answer-box" class="answer-box" style="display:none"></div>
             <div id="answer-hint" class="hint"></div>
             <button id="next-round-btn" class="btn primary" style="display:none">✅ 回答完毕，下一轮</button>
           </div>
@@ -217,7 +218,11 @@
       <div class="dm-window">
         <div class="dm-header">
           <b id="dm-title">私聊</b>
-          <button id="dm-close" class="btn mini">✕</button>
+          <span class="dm-header-btns">
+            <button id="dm-call-audio" class="btn mini" title="语音通话">📞 语音</button>
+            <button id="dm-call-video" class="btn mini" title="视频通话">🎥 视频</button>
+            <button id="dm-close" class="btn mini">✕</button>
+          </span>
         </div>
         <div id="dm-list" class="dm-list"></div>
         <div class="chat-input-row">
@@ -240,6 +245,7 @@
   <script src="game-core.js"></script>
   <script src="mqtt-net.js"></script>
   <script src="social.js"></script>
+  <script src="call.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

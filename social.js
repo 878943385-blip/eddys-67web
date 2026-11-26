@@ -25,6 +25,8 @@
   const REG_TOPIC = BASE + '/registry';
   const BANNED_TOPIC = BASE + '/banned';
   const QUESTIONS_TOPIC = BASE + '/questions';
+  const FRIENDS_PREFIX = BASE + '/friends/';   // retained：每个账号自己的好友列表 {list, ts}
+  const DMHIST_PREFIX = BASE + '/dmhist/';     // retained：每个账号自己的私聊记录 {dms, ts}（仅自己订阅）
   const HB_MS = 5000;
   const OFFLINE_AFTER = 15000;
   const CONNECT_TIMEOUT = 9000;
@@ -87,8 +89,28 @@
   SocialNet.prototype.loadSession = function () {
     return this._lsGet('tod67_auth', null);
   };
-  SocialNet.prototype._saveFriends = function () { this._lsSet('tod67_friends', this.friends); };
-  SocialNet.prototype._saveDMs = function () { this._lsSet('tod67_dms', this.dms); };
+  SocialNet.prototype._saveFriends = function () { this._lsSet('tod67_friends_' + (this.user ? this.user.username : 'anon'), this.friends); };
+  SocialNet.prototype._saveDMs = function () { this._lsSet('tod67_dms_' + (this.user ? this.user.username : 'anon'), this.dms); };
+
+  // 云端同步：好友列表 / 私聊记录（retained，换设备、重登都不丢）
+  SocialNet.prototype._publishFriends = function () {
+    if (this.client && this.connected && this.user) {
+      this.client.publish(
+        FRIENDS_PREFIX + this.user.username,
+        JSON.stringify({ list: this.friends, ts: Date.now() }),
+        { qos: 0, retain: true }
+      );
+    }
+  };
+  SocialNet.prototype._publishDMs = function () {
+    if (this.client && this.connected && this.user) {
+      this.client.publish(
+        DMHIST_PREFIX + this.user.username,
+        JSON.stringify({ dms: this.dms, ts: Date.now() }),
+        { qos: 0, retain: true }
+      );
+    }
+  };
 
   // ---------- 连接（broker 故障转移） ----------
   SocialNet.prototype.connect = function () {
@@ -146,10 +168,18 @@
     return this._connecting;
   };
 
-  // 订阅自己的私聊频道（登录后调用）
+  // 订阅自己的私聊/记录/好友列表/通话信令频道（登录后调用）
   SocialNet.prototype._subscribeDM = function () {
     if (this.client && this.connected && this.user) {
-      this.client.subscribe(BASE + '/dm/' + this.user.username, { qos: 0 });
+      this.client.subscribe(
+        [
+          BASE + '/dm/' + this.user.username,
+          DMHIST_PREFIX + this.user.username,
+          FRIENDS_PREFIX + this.user.username,
+          BASE + '/call/' + this.user.username,
+        ],
+        { qos: 0 }
+      );
     }
   };
 
@@ -193,9 +223,30 @@
       if (msg.ok && !this.friends.some((f) => f.username === msg.from)) {
         this.friends.push({ username: msg.from, name: msg.name || msg.from });
         this._saveFriends();
+        this._publishFriends();
         this._notifyFriends();
       }
       if (this.onFriendResult) this.onFriendResult(msg);
+      return;
+    }
+    if (topic.startsWith(DMHIST_PREFIX)) {
+      const u = topic.slice(DMHIST_PREFIX.length);
+      if (u === (this.user && this.user.username) && msg && msg.dms) {
+        this._dmsCloudArrived = true;
+        this.dms = msg.dms;
+        this._saveDMs();
+        if (this.onHistory) this.onHistory();
+      }
+      return;
+    }
+    if (topic.startsWith(FRIENDS_PREFIX)) {
+      const u = topic.slice(FRIENDS_PREFIX.length);
+      if (u === (this.user && this.user.username) && msg && Array.isArray(msg.list)) {
+        this._friendsCloudArrived = true;
+        this.friends = msg.list;
+        this._saveFriends();
+        this._notifyFriends();
+      }
       return;
     }
     if (topic.startsWith(BASE + '/dm/')) {
@@ -204,10 +255,15 @@
       list.push({ from: msg.from, name: msg.name || msg.from, text: msg.text, ts: msg.ts || Date.now(), mine: false });
       if (list.length > 200) list.splice(0, list.length - 200);
       this._saveDMs();
+      this._publishDMs();
       const isOpen = this._dmOpenWith === msg.from;
       if (!isOpen) this.unread.set(msg.from, (this.unread.get(msg.from) || 0) + 1);
       if (this.onDM) this.onDM(msg, isOpen);
       this._notifyFriends();
+      return;
+    }
+    if (topic.startsWith(BASE + '/call/')) {
+      if (this.onCallSignal) this.onCallSignal(topic.slice((BASE + '/call/').length), msg);
       return;
     }
   };
@@ -268,7 +324,7 @@
       return sha256Hex('tod67:' + password).then((h) => {
         if (h !== entry.h) throw new Error('密码不对哦');
         return self._becomeUser({ username, name: entry.name || username });
-      });
+      }).then((u) => self._waitCloudSocial().then(() => u));
     });
   };
 
@@ -292,7 +348,8 @@
         if (session && self.isBanned(session.username)) throw self._banError(session.username);
         self.registry = self.registry || {};
         return self._becomeUser(session);
-      });
+      })
+      .then((u) => self._waitCloudSocial().then(() => u));
   };
 
   SocialNet.prototype._waitRegistry = function () {
@@ -341,11 +398,39 @@
   SocialNet.prototype._becomeUser = function (session) {
     this.user = { username: session.username, name: session.name || session.username };
     this._lsSet('tod67_auth', this.user);
-    this.friends = this._lsGet('tod67_friends', []);
-    this.dms = this._lsGet('tod67_dms', {});
+    // 旧版共享 key 迁移到按账号分 key（老用户升级无损）
+    const legacyFriends = this._lsGet('tod67_friends', null);
+    const legacyDms = this._lsGet('tod67_dms', null);
+    const keyF = 'tod67_friends_' + this.user.username;
+    const keyD = 'tod67_dms_' + this.user.username;
+    if (legacyFriends && !this._lsGet(keyF, null)) this._lsSet(keyF, legacyFriends);
+    if (legacyDms && !this._lsGet(keyD, null)) this._lsSet(keyD, legacyDms);
+    this._friendsCloudArrived = false;
+    this._dmsCloudArrived = false;
+    this.friends = this._lsGet(keyF, []);
+    this.dms = this._lsGet(keyD, {});
     this._subscribeDM();
     this._startHeartbeat();
     return this.user;
+  };
+
+  // 等云端好友列表与私聊记录到达（retained，最多 2.2 秒；超时用本地缓存）
+  SocialNet.prototype._waitCloudSocial = function () {
+    const self = this;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearInterval(poll);
+        clearTimeout(timer);
+        resolve();
+      };
+      const poll = setInterval(() => {
+        if (self._friendsCloudArrived && self._dmsCloudArrived) finish();
+      }, 100);
+      const timer = setTimeout(finish, 2200);
+    });
   };
 
   SocialNet.prototype._startHeartbeat = function () {
@@ -425,6 +510,7 @@
     if (!this.friends.some((f) => f.username === from)) {
       this.friends.push({ username: from, name: fromName || from });
       this._saveFriends();
+      this._publishFriends();
       this._notifyFriends();
     }
     return this.connect().then(() => {
@@ -463,6 +549,7 @@
     if (list.length > 200) list.splice(0, list.length - 200);
     this._saveDMs();
     return this.connect().then(() => {
+      self._publishDMs();
       self.client.publish(BASE + '/dm/' + friend, JSON.stringify(msg), { qos: 0 });
       return true;
     });
@@ -481,10 +568,8 @@
     this.announceOffline();
     this._stopHeartbeat();
     try {
+      // 只清除登录态；好友与聊天记录按账号保留在本机 + 云端，重登/换设备都不丢
       localStorage.removeItem('tod67_auth');
-      // 好友和聊天记录也一并清掉（跟随账号）
-      localStorage.removeItem('tod67_friends');
-      localStorage.removeItem('tod67_dms');
     } catch (e) { /* ignore */ }
     this.user = null;
     this.friends = [];
