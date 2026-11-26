@@ -8,8 +8,42 @@
 </head>
 <body>
   <div id="app">
+    <!-- ===== 注册/登录 ===== -->
+    <div id="auth-view" class="view" style="display:none">
+      <div class="hero">
+        <div class="hero-emoji">🎲</div>
+        <h1>真心话大冒险</h1>
+        <p class="sub">猜拳定胜负 · 出题见真心 · 多人联机开黑</p>
+      </div>
+
+      <div class="conn-status" id="auth-conn-status" style="display:none">
+        <span class="conn-dot" id="auth-conn-dot"></span><span id="auth-conn-text">连接中…</span>
+      </div>
+
+      <div class="card" id="auth-card">
+        <div class="tabs">
+          <button class="atab active" data-tab="register">注册账号</button>
+          <button class="atab" data-tab="login">登录</button>
+        </div>
+
+        <div class="field">
+          <label>用户名</label>
+          <input id="auth-user" type="text" maxlength="12" placeholder="2-12 个字符，也是你的游戏昵称" />
+        </div>
+
+        <div class="field">
+          <label>密码</label>
+          <input id="auth-pass" type="password" maxlength="32" placeholder="至少 4 位" />
+        </div>
+
+        <button id="auth-btn" class="btn primary big">注册并进入</button>
+        <div id="auth-error" class="error-text"></div>
+        <p class="hint">💡 注册后在本机自动登录，下次进网站不用再输；游戏里的名字以后随时可以改</p>
+      </div>
+    </div>
+
     <!-- ===== 首页 ===== -->
-    <div id="home-view" class="view">
+    <div id="home-view" class="view" style="display:none">
       <div class="hero">
         <div class="hero-emoji">🎲</div>
         <h1>真心话大冒险</h1>
@@ -20,7 +54,28 @@
         <span class="conn-dot" id="conn-dot"></span><span id="conn-text">连接中…</span>
       </div>
 
-      <!-- 第一步：昵称 + 选择创建/加入 -->
+      <!-- 账号栏 -->
+      <div class="account-bar" id="account-bar" style="display:none">
+        <span class="acc-hello">👋 <b id="acc-name">-</b></span>
+        <span class="acc-btns">
+          <button id="rename-btn" class="btn mini">✏️ 改名</button>
+          <button id="logout-btn" class="btn mini ghost-dark">🚪 退出登录</button>
+        </span>
+      </div>
+
+      <!-- 好友面板 -->
+      <div class="card friends-card" id="friends-card">
+        <h3>👫 好友</h3>
+        <div class="friend-search-row">
+          <input id="friend-search" type="text" maxlength="12" placeholder="输入好友的用户名搜索" />
+          <button id="friend-search-btn" class="btn primary mini">🔍 搜索</button>
+        </div>
+        <div id="friend-result" class="friend-result"></div>
+        <div id="friend-list" class="friend-list"></div>
+        <p class="hint" id="friend-hint">还没有好友，用上面的搜索加一个吧（对方在线才能收到申请）</p>
+      </div>
+
+      <!-- 第一步：选择创建/加入 -->
       <div class="card" id="home-step1">
         <div class="tabs">
           <button class="tab active" data-tab="create">创建房间</button>
@@ -28,8 +83,8 @@
         </div>
 
         <div class="field">
-          <label>你的昵称</label>
-          <input id="nick-input" type="text" maxlength="12" placeholder="例如：小明" />
+          <label>你的身份（账号名，可点上方「改名」修改）</label>
+          <div class="readonly-name" id="home-identity">-</div>
         </div>
 
         <div class="field" id="code-field" style="display:none">
@@ -163,6 +218,20 @@
       </main>
     </div>
 
+    <div id="dm-modal" class="modal-overlay" style="display:none">
+      <div class="dm-window">
+        <div class="dm-header">
+          <b id="dm-title">私聊</b>
+          <button id="dm-close" class="btn mini">✕</button>
+        </div>
+        <div id="dm-list" class="dm-list"></div>
+        <div class="chat-input-row">
+          <input id="dm-input" type="text" maxlength="300" placeholder="说点什么…" />
+          <button id="dm-send" class="btn primary mini">发送</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="toast" style="display:none"></div>
   </div>
 
@@ -175,6 +244,7 @@
   <script src="questions.js"></script>
   <script src="game-core.js"></script>
   <script src="mqtt-net.js"></script>
+  <script src="social.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

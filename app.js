@@ -15,6 +15,8 @@
   let staleWarned = false;
 
   const net = new MqttNet();
+  const social = new SocialNet();
+  let account = null; // {username, name}
 
   const $ = (id) => document.getElementById(id);
 
@@ -26,7 +28,7 @@
     const el = $('toast');
     el.textContent = text;
     el.style.display = 'block';
-    el.style.background = isError ? 'rgba(200,40,40,.92)' : 'rgba(30,25,60,.92)';
+    el.style.background = isError ? 'rgba(200,40,40,.92)' : 'rgba(62,42,28,.92)';
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (el.style.display = 'none'), 2600);
   }
@@ -96,15 +98,13 @@
   });
 
   $('enter-btn').addEventListener('click', () => {
-    const name = $('nick-input').value.trim();
-    if (!name) return showError('home-error', '先给自己起个昵称吧');
     if (homeTab === 'join') {
       const code = $('code-input').value.trim();
       if (!/^\d{4}$/.test(code)) return showError('home-error', '房间号是 4 位数字');
       $('enter-btn').disabled = true;
       $('enter-btn').textContent = '连接中…';
       net.connect(myId, async () => {
-        const res = await net.joinRoom(myId, name, code);
+        const res = await net.joinRoom(myId, account.name, code);
         $('enter-btn').disabled = false;
         $('enter-btn').textContent = '加入房间';
         if (!res.ok) {
@@ -114,12 +114,11 @@
         }
       });
     } else {
-      $('step2-nick').textContent = name;
+      $('step2-nick').textContent = account.name;
       $('home-step1').style.display = 'none';
       $('home-step2').style.display = 'block';
     }
   });
-  $('nick-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('enter-btn').click());
   $('code-input').addEventListener('keydown', (e) => e.key === 'Enter' && $('enter-btn').click());
 
   document.querySelectorAll('.mp-btn').forEach((b) => {
@@ -131,12 +130,11 @@
   });
 
   $('confirm-create-btn').addEventListener('click', () => {
-    const name = $('nick-input').value.trim();
     $('confirm-create-btn').disabled = true;
     $('confirm-create-btn').textContent = '正在开房…';
     net.connect(myId, () => {
       isHostMode = true;
-      net.hostRoom(myId, name, selectedMaxPlayers);
+      net.hostRoom(myId, account.name, selectedMaxPlayers);
       $('confirm-create-btn').disabled = false;
       $('confirm-create-btn').textContent = '✅ 确认创建房间';
     });
@@ -169,7 +167,10 @@
   });
 
   // 页面关闭时通知
-  window.addEventListener('pagehide', () => net.leave());
+  window.addEventListener('pagehide', () => {
+    net.leave();
+    social.announceOffline();
+  });
 
   $('start-btn').addEventListener('click', () => send({ action: 'start' }));
 
@@ -450,6 +451,248 @@
     if (nearBottom) list.scrollTop = list.scrollHeight;
   }
 
+  // ---------- 账号：注册 / 登录 ----------
+  let authMode = 'register';
+
+  document.querySelectorAll('.atab').forEach((t) => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.atab').forEach((x) => x.classList.remove('active'));
+      t.classList.add('active');
+      authMode = t.dataset.tab;
+      $('auth-btn').textContent = authMode === 'register' ? '注册并进入' : '登录';
+      $('auth-error').textContent = '';
+    });
+  });
+
+  function setAuthConn(st) {
+    const bar = $('auth-conn-status');
+    const dot = $('auth-conn-dot');
+    const text = $('auth-conn-text');
+    if (st === 'hidden') return (bar.style.display = 'none');
+    bar.style.display = 'flex';
+    dot.classList.remove('ok', 'bad');
+    if (st === 'ok') { dot.classList.add('ok'); text.textContent = '已连接'; }
+    else if (st === 'bad') { dot.classList.add('bad'); text.textContent = '连接失败，重试中…'; }
+    else { text.textContent = '连接中…'; }
+  }
+
+  $('auth-btn').addEventListener('click', () => {
+    const username = $('auth-user').value.trim();
+    const password = $('auth-pass').value;
+    if (!username) return showError('auth-error', '先输入用户名');
+    if (!password) return showError('auth-error', '先输入密码');
+    $('auth-btn').disabled = true;
+    $('auth-btn').textContent = '连接中…';
+    const p = authMode === 'register' ? social.register(username, password) : social.login(username, password);
+    p.then((user) => {
+      account = user;
+      enterHome();
+    }).catch((err) => {
+      showError('auth-error', err.message || '操作失败，请重试');
+    }).finally(() => {
+      $('auth-btn').disabled = false;
+      $('auth-btn').textContent = authMode === 'register' ? '注册并进入' : '登录';
+    });
+  });
+  $('auth-pass').addEventListener('keydown', (e) => e.key === 'Enter' && $('auth-btn').click());
+  $('auth-user').addEventListener('keydown', (e) => e.key === 'Enter' && $('auth-btn').click());
+
+  function enterHome() {
+    $('auth-view').style.display = 'none';
+    $('home-view').style.display = 'block';
+    $('account-bar').style.display = 'flex';
+    $('acc-name').textContent = account.name;
+    $('home-identity').textContent = account.name;
+    renderFriends();
+  }
+
+  $('rename-btn').addEventListener('click', () => {
+    const newName = prompt('输入新的名字（2-12 个字符）', account.name);
+    if (!newName) return;
+    const name = newName.trim();
+    if (!name) return;
+    social.changeName(name).then((user) => {
+      account = user;
+      $('acc-name').textContent = account.name;
+      $('home-identity').textContent = account.name;
+      toast('改名成功！以后进房间都用这个名字');
+    }).catch((err) => toast(err.message, true));
+  });
+
+  $('logout-btn').addEventListener('click', () => {
+    if (!confirm('退出登录？本机保存的账号和好友记录将被清除')) return;
+    social.logout();
+    location.reload();
+  });
+
+  // ---------- 好友 ----------
+  function renderFriends() {
+    const el = $('friend-list');
+    if (!el) return;
+    el.innerHTML = '';
+    const friends = social.friends || [];
+    $('friend-hint').textContent = friends.length
+      ? '点击好友开始私聊 🟢 在线 · ⚪ 离线'
+      : '还没有好友，用上面的搜索加一个吧（对方在线才能收到申请）';
+    for (const f of friends) {
+      const online = social.onlineOf(f.username);
+      const unread = social.unread.get(f.username) || 0;
+      const row = document.createElement('div');
+      row.className = 'friend-row';
+      row.innerHTML = `
+        <span class="fdot ${online ? 'on' : ''}"></span>
+        <span class="fname">${esc(f.name)}</span>
+        ${unread ? `<span class="fbadge">${unread}</span>` : ''}
+        <span class="fchat">${online ? '💬 私聊' : '💤 离线'}</span>`;
+      row.addEventListener('click', () => openDM(f));
+      el.appendChild(row);
+    }
+  }
+
+  let searchResultUser = null;
+  $('friend-search-btn').addEventListener('click', () => {
+    const username = $('friend-search').value.trim();
+    const el = $('friend-result');
+    el.innerHTML = '';
+    searchResultUser = null;
+    if (!username) return;
+    if (account && username === account.username) {
+      el.innerHTML = '<span class="fr-hint">😄 这是你自己的账号</span>';
+      return;
+    }
+    const res = social.searchUser(username);
+    if (!res.exists) {
+      el.innerHTML = '<span class="fr-hint">没有找到这个用户名，检查一下拼写？</span>';
+      return;
+    }
+    const isFriend = (social.friends || []).some((f) => f.username === username);
+    searchResultUser = username;
+    el.innerHTML = `
+      <div class="friend-row result">
+        <span class="fdot ${res.online ? 'on' : ''}"></span>
+        <span class="fname">${esc(res.name)}</span>
+        <button id="add-friend-btn" class="btn primary mini" ${isFriend ? 'disabled' : ''}>
+          ${isFriend ? '✅ 已是好友' : '➕ 加好友'}
+        </button>
+      </div>`;
+    const btn = $('add-friend-btn');
+    if (btn && !isFriend) {
+      btn.addEventListener('click', () => {
+        social.addFriend(username)
+          .then(() => {
+            btn.disabled = true;
+            btn.textContent = '📤 申请已发送';
+            toast(res.online ? `已向 ${res.name} 发送好友申请` : `已发送申请（${res.name} 当前离线，上线后才能收到）`);
+          })
+          .catch((err) => toast(err.message, true));
+      });
+    }
+  });
+  $('friend-search').addEventListener('keydown', (e) => e.key === 'Enter' && $('friend-search-btn').click());
+
+  function handleFriendRequest(msg) {
+    if (confirm(`💌 ${msg.name || msg.from} 请求加你为好友，同意吗？`)) {
+      social.acceptFriend(msg.from, msg.name).then(() => toast(`已添加 ${msg.name || msg.from} 为好友 🎉`));
+    } else {
+      social.declineFriend(msg.from);
+    }
+  }
+
+  function handleFriendResult(msg) {
+    if (msg.ok) {
+      toast(`${msg.name || msg.from} 已同意你的好友申请 🎉`);
+      $('friend-result').innerHTML = '';
+      $('friend-search').value = '';
+    } else {
+      toast(`${msg.name || msg.from} 拒绝了好友申请`, true);
+    }
+  }
+
+  // ---------- 私聊 ----------
+  let dmWith = null;
+
+  function openDM(friend) {
+    dmWith = friend.username;
+    social.clearUnread(dmWith);
+    $('dm-title').textContent = `与 ${friend.name} 聊天${social.onlineOf(dmWith) ? ' 🟢' : '（离线）'}`;
+    renderDM();
+    $('dm-modal').style.display = 'flex';
+    renderFriends();
+    setTimeout(() => $('dm-input').focus(), 50);
+  }
+
+  function closeDM() {
+    dmWith = null;
+    social.closeDM();
+    $('dm-modal').style.display = 'none';
+    renderFriends();
+  }
+
+  function renderDM() {
+    if (!dmWith) return;
+    const list = $('dm-list');
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+    const msgs = social.dmHistory(dmWith);
+    list.innerHTML = '';
+    for (const m of msgs) {
+      const d = document.createElement('div');
+      d.className = 'chat-msg' + (m.mine ? ' mine' : '');
+      d.innerHTML = `<div class="meta">${esc(m.name)} · ${new Date(m.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</div><div class="bubble">${esc(m.text)}</div>`;
+      list.appendChild(d);
+    }
+    if (nearBottom || list.childElementCount) list.scrollTop = list.scrollHeight;
+  }
+
+  $('dm-close').addEventListener('click', closeDM);
+  $('dm-modal').addEventListener('click', (e) => { if (e.target === $('dm-modal')) closeDM(); });
+
+  $('dm-send').addEventListener('click', sendDM);
+  $('dm-input').addEventListener('keydown', (e) => e.key === 'Enter' && sendDM());
+  function sendDM() {
+    const text = $('dm-input').value.trim();
+    if (!text || !dmWith) return;
+    const friend = social.friends.find((f) => f.username === dmWith);
+    social.sendDM(dmWith, text)
+      .then(() => {
+        $('dm-input').value = '';
+        renderDM();
+        if (friend && !social.onlineOf(friend.username)) toast('对方当前离线，上线后可能看不到这条消息', true);
+      })
+      .catch((err) => toast(err.message, true));
+  }
+
+  function handleDM(msg, isOpen) {
+    if (isOpen && dmWith === msg.from) {
+      renderDM();
+    } else {
+      toast(`💬 ${msg.name || msg.from}：${msg.text}`);
+    }
+    renderFriends();
+  }
+
   // ---------- 启动 ----------
   myId = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+  social.onFriends = renderFriends;
+  social.onDM = handleDM;
+  social.onFriendRequest = handleFriendRequest;
+  social.onFriendResult = handleFriendResult;
+
+  // 已有本机登录态 → 直接进首页；否则先注册/登录
+  const saved = social.loadSession();
+  if (saved && saved.username) {
+    setAuthConn('hidden');
+    social.resume(saved).then((user) => {
+      account = user;
+      enterHome();
+      setAuthConn('hidden');
+    }).catch(() => {
+      // 恢复失败（如连不上）仍显示注册页
+      $('auth-view').style.display = 'block';
+      setAuthConn('hidden');
+    });
+  } else {
+    $('auth-view').style.display = 'block';
+    social.connect().catch(() => {});
+  }
 })();
