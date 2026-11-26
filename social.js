@@ -240,6 +240,17 @@
     });
   };
 
+  // 二合一：用户名不存在 → 注册；已存在 → 校验密码登录
+  SocialNet.prototype.registerOrLogin = function (username, password) {
+    const self = this;
+    return this.connect()
+      .then(() => this._waitRegistry())
+      .then(() => {
+        if ((self.registry || {})[username]) return self.login(username, password);
+        return self.register(username, password);
+      });
+  };
+
   // 本机已有登录态时恢复（不重新校验密码）
   SocialNet.prototype.resume = function (session) {
     const self = this;

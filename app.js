@@ -451,17 +451,27 @@
     if (nearBottom) list.scrollTop = list.scrollHeight;
   }
 
-  // ---------- 账号：注册 / 登录 ----------
-  let authMode = 'register';
+  // ---------- 账号：注册/登录二合一 ----------
 
-  document.querySelectorAll('.atab').forEach((t) => {
-    t.addEventListener('click', () => {
-      document.querySelectorAll('.atab').forEach((x) => x.classList.remove('active'));
-      t.classList.add('active');
-      authMode = t.dataset.tab;
-      $('auth-btn').textContent = authMode === 'register' ? '注册并进入' : '登录';
-      $('auth-error').textContent = '';
-    });
+  $('auth-btn').addEventListener('click', () => {
+    const username = $('auth-user').value.trim();
+    const password = $('auth-pass').value;
+    if (!username) return showError('auth-error', '先输入用户名');
+    if (!password) return showError('auth-error', '先输入密码');
+    $('auth-btn').disabled = true;
+    $('auth-btn').textContent = '连接中…';
+    social.registerOrLogin(username, password)
+      .then((user) => {
+        account = user;
+        enterHome();
+      })
+      .catch((err) => {
+        showError('auth-error', err.message || '操作失败，请重试');
+      })
+      .finally(() => {
+        $('auth-btn').disabled = false;
+        $('auth-btn').textContent = '🚀 进入游戏';
+      });
   });
 
   function setAuthConn(st) {
@@ -476,24 +486,6 @@
     else { text.textContent = '连接中…'; }
   }
 
-  $('auth-btn').addEventListener('click', () => {
-    const username = $('auth-user').value.trim();
-    const password = $('auth-pass').value;
-    if (!username) return showError('auth-error', '先输入用户名');
-    if (!password) return showError('auth-error', '先输入密码');
-    $('auth-btn').disabled = true;
-    $('auth-btn').textContent = '连接中…';
-    const p = authMode === 'register' ? social.register(username, password) : social.login(username, password);
-    p.then((user) => {
-      account = user;
-      enterHome();
-    }).catch((err) => {
-      showError('auth-error', err.message || '操作失败，请重试');
-    }).finally(() => {
-      $('auth-btn').disabled = false;
-      $('auth-btn').textContent = authMode === 'register' ? '注册并进入' : '登录';
-    });
-  });
   $('auth-pass').addEventListener('keydown', (e) => e.key === 'Enter' && $('auth-btn').click());
   $('auth-user').addEventListener('keydown', (e) => e.key === 'Enter' && $('auth-btn').click());
 
