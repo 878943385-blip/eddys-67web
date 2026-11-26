@@ -5,7 +5,9 @@
  * 密码只存 SHA-256 哈希，本机 localStorage 记住登录态。
  *
  * 主题：
- *   tod67web/registry        retained 全局账号表 {username: {h, name, ts}}
+ *   tod67web/registry        retained 全局账号表 {username: {h, name, ts, role?}}
+ *   tod67web/banned          retained 封禁名单 {username: {reason, by, ts}}（管理员站维护）
+ *   tod67web/questions       retained 动态题库 {truth:[], dare:[], updatedBy, ts}（管理员站维护，空载荷=清除）
  *   tod67web/online/<user>   在线心跳 {ts}，离线广播 {on:false}
  *   tod67web/freq/<target>   好友申请 {from, name, ts}
  *   tod67web/fres/<target>   好友回复 {from, name, ok, ts}
@@ -21,9 +23,15 @@
   ];
   const BASE = 'tod67web';
   const REG_TOPIC = BASE + '/registry';
+  const BANNED_TOPIC = BASE + '/banned';
+  const QUESTIONS_TOPIC = BASE + '/questions';
   const HB_MS = 5000;
   const OFFLINE_AFTER = 15000;
   const CONNECT_TIMEOUT = 9000;
+
+  // 内置题库快照（questions.js 先于本文件加载）：管理员清除自定义题库时恢复用
+  const BUILTIN_TRUTH = window.TRUTH_QUESTIONS || [];
+  const BUILTIN_DARE = window.DARE_QUESTIONS || [];
 
   function sha256Hex(text) {
     try {
@@ -50,6 +58,7 @@
     this.brokerIdx = 0;
     this.user = null;            // {username, name}
     this.registry = null;        // 全局账号表
+    this.banned = null;          // 封禁名单（管理员站维护）
     this.friends = [];           // [{username, name}]
     this.online = new Map();     // username -> 最后心跳 ts
     this.dms = {};               // friendUsername -> [{from, name, text, ts, mine}]
@@ -112,7 +121,7 @@
       client.on('connect', () => {
         clearTimeout(timer);
         self.connected = true;
-        client.subscribe([REG_TOPIC, BASE + '/online/+', BASE + '/freq/+', BASE + '/fres/+'], { qos: 0 });
+        client.subscribe([REG_TOPIC, BANNED_TOPIC, QUESTIONS_TOPIC, BASE + '/online/+', BASE + '/freq/+', BASE + '/fres/+'], { qos: 0 });
         // 延迟订阅自己的 dm 频道（需要 user，连接时可能还没登录）
         if (self.user) client.subscribe(BASE + '/dm/' + self.user.username, { qos: 0 });
         resolve();
@@ -120,8 +129,17 @@
       client.on('reconnect', () => { self.connected = client.connected; });
       client.on('close', () => { self.connected = false; });
       client.on('message', (topic, payload) => {
+        const raw = payload.toString();
+        if (!raw) {
+          // 空载荷 = 管理员清除了自定义题库 → 恢复内置题库
+          if (topic === QUESTIONS_TOPIC) {
+            window.TRUTH_QUESTIONS = BUILTIN_TRUTH;
+            window.DARE_QUESTIONS = BUILTIN_DARE;
+          }
+          return;
+        }
         let msg;
-        try { msg = JSON.parse(payload.toString()); } catch (e) { return; }
+        try { msg = JSON.parse(raw); } catch (e) { return; }
         self._route(topic, msg);
       });
     });
@@ -140,6 +158,18 @@
     if (topic === REG_TOPIC) {
       this.registry = msg || {};
       if (this.onRegistryChange) this.onRegistryChange(this.registry);
+      return;
+    }
+    if (topic === BANNED_TOPIC) {
+      this.banned = msg || {};
+      return;
+    }
+    if (topic === QUESTIONS_TOPIC) {
+      // 管理员站发布的动态题库：空载荷或字段缺失 = 恢复内置题库
+      try {
+        if (Array.isArray(msg.truth) && msg.truth.length) window.TRUTH_QUESTIONS = msg.truth;
+        if (Array.isArray(msg.dare) && msg.dare.length) window.DARE_QUESTIONS = msg.dare;
+      } catch (e) { /* ignore */ }
       return;
     }
     if (topic.startsWith(BASE + '/online/')) {
@@ -214,7 +244,8 @@
     if (err) return Promise.reject(new Error(err));
     if (!password || password.length < 4) return Promise.reject(new Error('密码至少 4 位'));
     const self = this;
-    return this.connect().then(() => this._waitRegistry()).then(() => {
+    return this.connect().then(() => Promise.all([this._waitRegistry(), this._waitBanned()])).then(() => {
+      if (self.isBanned(username)) throw self._banError(username);
       const reg = self.registry || {};
       if (reg[username]) throw new Error('这个用户名已经被注册了，换一个或直接登录');
       return sha256Hex('tod67:' + password).then((h) => {
@@ -230,7 +261,8 @@
     const err = validateUsername(username);
     if (err) return Promise.reject(new Error(err));
     const self = this;
-    return this.connect().then(() => this._waitRegistry()).then(() => {
+    return this.connect().then(() => Promise.all([this._waitRegistry(), this._waitBanned()])).then(() => {
+      if (self.isBanned(username)) throw self._banError(username);
       const entry = (self.registry || {})[username];
       if (!entry) throw new Error('用户名不存在，先注册一个吧');
       return sha256Hex('tod67:' + password).then((h) => {
@@ -251,13 +283,16 @@
       });
   };
 
-  // 本机已有登录态时恢复（不重新校验密码）
+  // 本机已有登录态时恢复（不重新校验密码，但校验封禁状态）
   SocialNet.prototype.resume = function (session) {
     const self = this;
-    return this.connect().then(() => {
-      self.registry = self.registry || {};
-      return self._becomeUser(session);
-    });
+    return this.connect()
+      .then(() => Promise.all([this._waitRegistry(), this._waitBanned()]))
+      .then(() => {
+        if (session && self.isBanned(session.username)) throw self._banError(session.username);
+        self.registry = self.registry || {};
+        return self._becomeUser(session);
+      });
   };
 
   SocialNet.prototype._waitRegistry = function () {
@@ -272,6 +307,35 @@
         resolve();
       };
     });
+  };
+
+  // ---------- 封禁名单（管理员站维护） ----------
+  SocialNet.prototype.isBanned = function (username) {
+    return !!(this.banned && this.banned[username]);
+  };
+
+  // 等待封禁名单到达（retained，最多 2 秒；超时视为无名单）
+  SocialNet.prototype._waitBanned = function () {
+    const self = this;
+    if (self.banned) return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearInterval(poll);
+        clearTimeout(timer);
+        resolve();
+      };
+      const poll = setInterval(() => { if (self.banned) finish(); }, 100);
+      const timer = setTimeout(finish, 2000);
+    });
+  };
+
+  SocialNet.prototype._banError = function (username) {
+    const info = this.banned && this.banned[username];
+    const reason = info && info.reason ? '，理由：' + info.reason : '';
+    return new Error('该账号已被管理员封禁' + reason);
   };
 
   SocialNet.prototype._becomeUser = function (session) {

@@ -6,8 +6,9 @@
   'use strict';
 
   const RPS_SECONDS = 10;
-  const TRUTH = window.TRUTH_QUESTIONS;
-  const DARE = window.DARE_QUESTIONS;
+  // 题库可在运行中被管理员站动态更新（MQTT retained），使用时实时读取
+  const truthBank = () => window.TRUTH_QUESTIONS || [];
+  const dareBank = () => window.DARE_QUESTIONS || [];
 
   const rand = (n) => Math.floor(Math.random() * n);
   const pickRandom = (arr) => arr[rand(arr.length)];
@@ -90,8 +91,8 @@
           chosen: p.choice !== null,
           choice: room.lastResult ? p.choice : null,
         })),
-        truthCount: TRUTH.length,
-        dareCount: DARE.length,
+        truthCount: truthBank().length,
+        dareCount: dareBank().length,
       };
     }
 
